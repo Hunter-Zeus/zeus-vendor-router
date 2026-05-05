@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zeus Vendor Router v3.0</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- SheetJS for reading Excel from OneDrive -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { background: #F5F4F1; font-family: 'DM Sans', 'Segoe UI', sans-serif; }
+  select, input, textarea { font-family: 'DM Sans', 'Segoe UI', sans-serif; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ── ONEDRIVE CONFIG ──────────────────────────────────────────────────────────
+// Multiple URL formats to try — SharePoint requires the shares API approach
+const SHAREPOINT_SHARING_URL = "https://zeustx-my.sharepoint.com/:x:/p/hunter/IQCjgyaOLgjdQrnxcbC4pzExASXIlJRoligvrOaKXFw8wXY?e=8eqvhj";
+
+// Encode sharing URL using SharePoint's base64url shares API
+function getSharePointDownloadURL(sharingUrl) {
+  // base64url encode the sharing URL (no padding, - instead of +, _ instead of /)
+  const encoded = btoa(sharingUrl).replace(/=/g,"").replace(/\+/g,"-").replace(/\//g,"_");
+  return `https://zeustx-my.sharepoint.com/_api/v2.0/shares/u!${encoded}/driveItem/content`;
+}
+
+// Fallback: try appending &download=1 directly
+const ONEDRIVE_DOWNLOAD_URLS = [
+  getSharePointDownloadURL(SHAREPOINT_SHARING_URL),
+  SHAREPOINT_SHARING_URL + "&download=1",
+  SHAREPOINT_SHARING_URL.replace("?e=", "?download=1&e="),
+];
+
+// ── FALLBACK VENDOR DATA (used if OneDrive fetch fails) ───────────────────────
+const FALLBACK_VENDORS = [
+  { id:"metapower", name:"Meta Power", category:"TRANSFORMER", coo:["USA"], contact:"sales@metapower.com", productTypes:["1ph_overhead","3ph_overhead","1ph_pad","3ph_pad","substation"], kvaMin:167, kvaMax:50000, dryType:false, liquidFilled:true, hvMax:69, leadTime:{"1ph_overhead":"14 wks","3ph_overhead":"22 wks","1ph_pad":"16 wks","3ph_pad":"18 wks","substation":"20-26 wks"}, certifications:["UL","IEEE","ANSI","DOE","BAA","FEOC"], notes:"US manufacturer - Indiantown FL. BAA & FEOC compliant. Sweet spot 500-5000 KVA." },
+  { id:"daelim", name:"Daelim", category:"TRANSFORMER", coo:["South Korea","China","USA"], contact:"sales@daelim-electric.com", productTypes:["1ph_overhead","3ph_overhead","1ph_pad","3ph_pad","substation","power"], kvaMin:10, kvaMax:100000, dryType:false, liquidFilled:true, hvMax:154, leadTime:{"all":"Depends on project quantity"}, certifications:["UL","IEEE","ANSI","DOE","CESI","CNAS","CE"], notes:"South Korean OEM. Mfg in Jiangsu China + Houston TX after-sales." },
+  { id:"qxg", name:"QXG Technology", category:"TRANSFORMER", coo:["China"], contact:"celeste@qxgelec.com", productTypes:["1ph_overhead","3ph_overhead","1ph_pad","3ph_pad","substation","power"], kvaMin:5, kvaMax:1000000, dryType:false, liquidFilled:true, hvMax:500, leadTime:{"all":"4-8 wks"}, certifications:["UL","CUL","IEEE","CSA","ANSI","DOE"], notes:"Chinese OEM. Very short lead times (4-8 wks). UL listed. 10,000+ units/yr." },
+  { id:"eptcon", name:"EPTCON CanPower", category:"TRANSFORMER", coo:["Canada"], contact:"info@EPTCONCanPower.ca", productTypes:["1ph_pad","3ph_pad","substation","power","dry_type"], kvaMin:75, kvaMax:500000, dryType:true, liquidFilled:true, hvMax:800, leadTime:{"padmount":"10 wks","dry_type":"10 wks","substation":"12 wks","power":"9 mo"}, certifications:["UL","CSA","IEC","IEEE","ANSI"], notes:"Canadian manufacturer. Strong COO for tariff-sensitive customers. Also makes MV switchgear, HV breakers, MV GIS." },
+  { id:"romagnole", name:"Romagnole", category:"TRANSFORMER", coo:["Brazil"], contact:"", productTypes:["1ph_overhead","3ph_overhead","1ph_pad","3ph_pad"], kvaMin:25, kvaMax:2500, dryType:false, liquidFilled:true, hvMax:34.5, leadTime:{"all":"16-26 wks"}, certifications:["IEEE","ANSI"], notes:"Primary Zeus transformer history. Utility-grade distribution." },
+  { id:"betaenerji", name:"Beta Enerji", category:"TRANSFORMER", coo:["Turkey"], contact:"", productTypes:["1ph_pad","3ph_pad","substation","power","dry_type"], kvaMin:10, kvaMax:100000, dryType:true, liquidFilled:true, hvMax:154, leadTime:{"all":"14-22 wks"}, certifications:["IEC","IEEE","ANSI","ISO 9001"], notes:"Turkish OEM. Non-China non-US option." },
+  { id:"iemsa", name:"Iemsa", category:"TRANSFORMER", coo:["Mexico"], contact:"", productTypes:["1ph_overhead","3ph_overhead","1ph_pad","3ph_pad","substation","dry_type"], kvaMin:10, kvaMax:60000, dryType:true, liquidFilled:true, hvMax:69, leadTime:{"all":"14-22 wks"}, certifications:["NMX","ANSI"], notes:"Mexican OEM. EXW Mexico incoterm." },
+  { id:"inatra", name:"Inatra", category:"TRANSFORMER", coo:["Brazil","Ecuador"], contact:"", productTypes:["1ph_overhead","3ph_overhead","1ph_pad","3ph_pad"], kvaMin:10, kvaMax:5000, dryType:false, liquidFilled:true, hvMax:34.5, leadTime:{"all":"16-24 wks"}, certifications:["IEEE","ANSI"], notes:"Brazilian/Ecuadorian OEM. Also has poleline hardware in Zeus catalog." },
+  { id:"virginia", name:"Virginia Transformer", category:"TRANSFORMER", coo:["USA","Mexico"], contact:"", productTypes:["substation","power","dry_type"], kvaMin:300, kvaMax:400000, dryType:true, liquidFilled:true, hvMax:525, leadTime:{"all":"20-40 wks"}, certifications:["IEEE","ANSI","DOE","BAA"], notes:"US manufacturer. Large power and substation units. BAA-eligible." },
+  { id:"giga", name:"Giga Energy", category:"TRANSFORMER", coo:["Unknown"], contact:"", productTypes:["1ph_pad","3ph_pad"], kvaMin:10, kvaMax:10000, dryType:false, liquidFilled:true, hvMax:46, leadTime:{"all":"14-24 wks MTO / in-stock available"}, certifications:["UL","ANSI","IEEE","DOE"], notes:"Stocking in Houston TX and Long Beach CA. COO not disclosed." },
+  { id:"eptcon_sw", name:"EPTCON (Switchgear)", category:"SWITCHGEAR", coo:["Canada"], contact:"info@EPTCONCanPower.ca", productTypes:["mv_switchgear","hv_breakers","mv_gis"], certifications:["UL","CSA","IEC"], notes:"MV switchgear up to 36kV/4000A (12 wk), HV breakers 40.5-800kV (9 mo), MV GIS 15.5-42kV (6 mo)." },
+  { id:"asherpwr", name:"Asher Power", category:"SWITCHGEAR", coo:["USA"], contact:"", productTypes:["mv_switchgear"], certifications:[], notes:"MV switchgear and related equipment." },
+  { id:"pennsylvania", name:"Pennsylvania Switchgear", category:"SWITCHGEAR", coo:["USA"], contact:"sales@paswitchgear.com", productTypes:["hv_breakers"], certifications:["ANSI C37.06"], notes:"HV dead-tank SF6 circuit breakers 123-170kV, 40kA (PB123/PB145/PB170)." },
+  { id:"tavrida", name:"Tavrida Electric", category:"SWITCHGEAR", coo:["Turkey"], contact:"info@tavrida-na.com", productTypes:["reclosers"], certifications:["IEC 62271","IEEE C37.60","ISO 9001"], notes:"Recloser specialist. 15kV and 27kV, 800A. SEL-651R and Beckwith M-7679 compatible. 5-yr warranty." },
+  { id:"allunited", name:"All United", category:"SWITCHGEAR", coo:["USA"], contact:"", productTypes:["switchboards","panelboards","dry_type"], kvaMin:15, kvaMax:750, certifications:["UL"], notes:"Switchboards 1600-5000A, Panelboards 100-1200A, dry type 15-750 KVA." },
+  { id:"choctawkaul", name:"Choctaw Kaul (CK)", category:"HARDWARE", coo:["USA","Various"], contact:"", productTypes:["fasteners","insulators","connectors","ground_rods","crossarm","anchor","general_hardware"], certifications:[], notes:"Broadest coverage distributor - default fallback. 264+ SKUs in Zeus catalog." },
+  { id:"kline", name:"K-Line Insulators", category:"HARDWARE", coo:["Canada"], contact:"Favad", productTypes:["insulators"], certifications:["ISO 9001","CSA","ANSI","IEC"], notes:"Silicone rubber polymer insulators. Deadend/suspension 15kV-500kV, line post 15kV+. 40+ years." },
+  { id:"incesa", name:"Incesa", category:"HARDWARE", coo:["Brazil","Ecuador"], contact:"", productTypes:["connectors","insulators"], certifications:[], notes:"Wedge connectors, H-taps, compression lugs, parallel groove, Ampact taps. 51+ SKUs." },
+  { id:"poleline", name:"Poleline Power Systems", category:"HARDWARE", coo:["China"], contact:"", productTypes:["connectors","ug_accessories"], certifications:[], notes:"Loadbreak elbows, deadbreak T-bodies, bushing inserts, junctions, caps. 64+ SKUs. Primary UG separable connector source." },
+  { id:"travis", name:"Travis", category:"HARDWARE", coo:["USA"], contact:"", productTypes:["connectors"], certifications:[], notes:"Welded aluminum bus connectors, substation connectors. 47+ SKUs. US-made." },
+  { id:"domino", name:"Domino High Voltage", category:"HARDWARE", coo:["USA"], contact:"", productTypes:["specialty"], certifications:[], notes:"Term kits, shotgun sticks, live line tools, cold shrink terminations." },
+  { id:"richards_mfg", name:"Richards Manufacturing", category:"HARDWARE", coo:["USA"], contact:"", productTypes:["connectors","ug_accessories"], certifications:["UL","ISO 9001"], notes:"CU/AL connectors, 200A loadbreak elbows, 600/900A deadbreak elbows, cold shrinks. Via EHV Solutions. OnCor only. Excludes AEP." },
+];
+
+// ── PARSE ONEDRIVE EXCEL → VENDOR ARRAY ──────────────────────────────────────
+async function fetchVendorsFromOneDrive() {
+  let resp = null;
+  let lastErr = null;
+  for (const url of ONEDRIVE_DOWNLOAD_URLS) {
+    try {
+      const r = await fetch(url, { redirect: "follow" });
+      if (r.ok) { resp = r; break; }
+      lastErr = `HTTP ${r.status} from ${url}`;
+    } catch(e) {
+      lastErr = e.message;
+    }
+  }
+  if (!resp) throw new Error(lastErr || "All download URLs failed");
+  const buf = await resp.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+
+  // Read MASTER sheet — row 4 is header, rows 5+ are vendors
+  const ws = wb.Sheets["MASTER"];
+  if (!ws) throw new Error("MASTER sheet not found");
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+
+  // Get last updated from CHANGELOG
+  let lastUpdated = null;
+  const logWs = wb.Sheets["CHANGELOG"];
+  if (logWs) {
+    const logRows = XLSX.utils.sheet_to_json(logWs, { header: 1, defval: "" });
+    // Find most recent date in col 1 (index 0), starting from row 4
+    for (let i = logRows.length - 1; i >= 3; i--) {
+      const d = logRows[i][0];
+      if (d && String(d).match(/\d{4}-\d{2}-\d{2}/)) {
+        lastUpdated = String(d);
+        break;
+      }
+    }
+  }
+
+  // Header row is index 3 (row 4)
+  // Cols: 0=VendorID, 1=Name, 2=Status, 3=Categories, 4=COO, 5=Contact, 6=Email,
+  //       7=Phone, 8=SecName, 9=SecEmail, 10=SecPhone, 11=Website, 12=HQ,
+  //       13=USOffice, 14=DateAdded, 15=LastUpdated, 16=Notes
+  const vendors = [];
+  for (let i = 4; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r[0] || !r[1]) continue;
+    const status = String(r[2] || "").toLowerCase();
+    if (status === "inactive") continue;
+
+    const cats = String(r[3] || "").split(",").map(s => s.trim()).filter(Boolean);
+    const coo = String(r[4] || "").split(",").map(s => s.trim()).filter(Boolean);
+    const notes = String(r[16] || "");
+
+    // Map categories to TRANSFORMER/SWITCHGEAR/HARDWARE
+    const categoryMap = cats.flatMap(c => {
+      const cu = c.toUpperCase();
+      if (cu === "TF") return ["TRANSFORMER"];
+      if (cu === "SW") return ["SWITCHGEAR"];
+      if (cu.startsWith("HW")) return ["HARDWARE"];
+      if (cu === "PPE") return ["PPE"];
+      return [];
+    });
+    const primaryCat = categoryMap[0] || "OTHER";
+
+    // Try to get kVA info from TF sheet if transformer
+    let kvaMin = null, kvaMax = null, productTypes = [], certifications = [], leadTime = {}, hvMax = null;
+
+    if (primaryCat === "TRANSFORMER") {
+      const tfWs = wb.Sheets["TF"];
+      if (tfWs) {
+        const tfRows = XLSX.utils.sheet_to_json(tfWs, { header: 1, defval: "" });
+        // Find vendor row in TF (col 0 = vendor id, starting from row 5)
+        for (let j = 4; j < tfRows.length; j++) {
+          if (String(tfRows[j][0]).toLowerCase() === String(r[0]).toLowerCase()) {
+            // Col 1 = product types, cols 2-8 = kVA ranges by type
+            const ptStr = String(tfRows[j][1] || "");
+            if (ptStr.includes("1ph OH")) productTypes.push("1ph_overhead");
+            if (ptStr.includes("3ph OH")) productTypes.push("3ph_overhead");
+            if (ptStr.includes("1ph Pad")) productTypes.push("1ph_pad");
+            if (ptStr.includes("3ph Pad")) productTypes.push("3ph_pad");
+            if (ptStr.includes("Substation")) productTypes.push("substation");
+            if (ptStr.includes("Dry")) productTypes.push("dry_type");
+            if (ptStr.includes("Power")) productTypes.push("power");
+
+            // Gather all kVA values from cols 2-8
+            const kvaVals = [];
+            for (let k = 2; k <= 8; k++) {
+              const v = String(tfRows[j][k] || "");
+              const m = v.match(/(\d[\d,]*)\s*[-–]\s*([\d,]+)/);
+              if (m) {
+                kvaVals.push(parseInt(m[1].replace(/,/g,"")));
+                kvaVals.push(parseInt(m[2].replace(/,/g,"")));
+              }
+            }
+            if (kvaVals.length) {
+              kvaMin = Math.min(...kvaVals);
+              kvaMax = Math.max(...kvaVals);
+            }
+
+            // Certifications from col 25
+            const certStr = String(tfRows[j][25] || "");
+            certifications = certStr.split(",").map(s => s.trim()).filter(Boolean);
+
+            // Lead time from col 29
+            leadTime = { all: String(tfRows[j][29] || "") };
+
+            // HV max from col 9
+            const hvStr = String(tfRows[j][9] || "");
+            const hvM = hvStr.match(/(\d+(?:\.\d+)?)\s*kV/i);
+            if (hvM) hvMax = parseFloat(hvM[1]);
+            break;
+          }
+        }
+      }
+    }
+
+    vendors.push({
+      id: String(r[0]),
+      name: String(r[1]),
+      category: primaryCat,
+      categories: categoryMap,
+      coo,
+      contact: String(r[6] || r[5] || ""),
+      productTypes: productTypes.length ? productTypes : [],
+      kvaMin, kvaMax, hvMax,
+      dryType: productTypes.includes("dry_type"),
+      liquidFilled: productTypes.some(t => ["1ph_overhead","3ph_overhead","1ph_pad","3ph_pad","substation","power"].includes(t)),
+      certifications,
+      leadTime,
+      notes: String(r[16] || ""),
+      status: String(r[2] || "Active"),
+    });
+  }
+
+  return { vendors, lastUpdated };
+}
+
+// ── FIELD SCHEMAS ─────────────────────────────────────────────────────────────
+const FIELD_SCHEMAS = {
+  TRANSFORMER: [
+    { key:"phase", label:"Phase", type:"select", options:["","Single phase (1ph)","Three phase (3ph)"] },
+    { key:"mountType", label:"Mounting / Type", type:"select", options:["","Padmount","Overhead (pole mount)","Substation","Power (MVA-class)","Dry Type (indoor)"] },
+    { key:"kva", label:"kVA / MVA range", type:"text", placeholder:"e.g. 500-2500 kVA" },
+    { key:"hv", label:"Primary voltage (HV)", type:"text", placeholder:"e.g. 13.8kV or 34.5kV" },
+    { key:"lv", label:"Secondary voltage (LV)", type:"text", placeholder:"e.g. 480Y/277V or 208Y/120V" },
+    { key:"fluid", label:"Liquid vs. Dry", type:"select", options:["","Liquid-filled (oil/FR3)","Dry type","Either"] },
+    { key:"submersible", label:"Submersible required?", type:"select", options:["","No","Yes"] },
+  ],
+  SWITCHGEAR: [
+    { key:"swType", label:"Equipment type", type:"select", options:["","MV Switchgear (distribution)","HV Circuit Breakers","Reclosers / Sectionalizers","Panelboards / Switchboards"] },
+    { key:"voltage", label:"Voltage class", type:"text", placeholder:"e.g. 15kV, 25kV, 35kV, 138kV" },
+    { key:"current", label:"Current rating", type:"text", placeholder:"e.g. 1200A, 2000A" },
+    { key:"qty", label:"Quantity", type:"text", placeholder:"e.g. 5 units" },
+  ],
+  HARDWARE: [
+    { key:"hwType", label:"Hardware type", type:"select", options:["","Insulators","Surge arresters","Cutouts (dropout fuse)","Overhead connectors / taps","Underground elbows / T-bodies","Fasteners / bolts","Ground rods / grounding","Crossarms / structural","General / mixed BOM"] },
+    { key:"voltage", label:"Voltage class (if applicable)", type:"text", placeholder:"e.g. 15kV, 35kV, or N/A" },
+    { key:"conductorSize", label:"Conductor / size", type:"text", placeholder:"e.g. 336.4 ACSR, 4/0 AWG, 500 kcmil" },
+    { key:"qty", label:"Quantity / BOM lines", type:"text", placeholder:"e.g. 200 units or 12 line items" },
+  ],
+  PPE: [
+    { key:"ppeType", label:"PPE type", type:"select", options:["","Insulated gloves","Leather protectors","Mixed PPE"] },
+    { key:"gloveClass", label:"Glove class", type:"select", options:["","Class 00","Class 0","Class 1","Class 2","Class 3","Class 4","Multiple classes"] },
+    { key:"qty", label:"Quantity", type:"text", placeholder:"e.g. 50 pairs" },
+  ],
+};
+
+const CATEGORY_OPTIONS = [
+  { value:"", label:"- Select equipment category -" },
+  { value:"TRANSFORMER", label:"Transformer" },
+  { value:"SWITCHGEAR", label:"Switchgear / Breakers / Reclosers" },
+  { value:"HARDWARE", label:"Poleline Hardware" },
+  { value:"PPE", label:"PPE / Gloves" },
+];
+
+const COO_OPTIONS = [
+  { value:"", label:"No restriction" },
+  { value:"no_china", label:"Exclude China" },
+  { value:"domestic_only", label:"USA only (BAA / domestic)" },
+  { value:"feoc", label:"Exclude China + Russia (FEOC)" },
+];
+
+const CERT_OPTIONS = ["DOE 2016","UL Listed","BAA","FEOC Compliant","IEEE/ANSI","CSA","IEC","RUS"];
+
+// ── THEME ─────────────────────────────────────────────────────────────────────
+const T = {
+  bg:"#F5F4F1", surface:"#FFFFFF", surface2:"#F0EEE9",
+  border:"#D8D4CC", borderStrong:"#B8B2A8",
+  orange:"#FF5C02", orangeLight:"#FFF0E8", orangeBorder:"#FFCCAA",
+  text:"#1A1612", textMid:"#5A534A", textLight:"#8A837A",
+  green:"#2D6A3F", greenBg:"#EDF5F0", greenBorder:"#B8DEC5",
+  amber:"#7A5A00", amberBg:"#FFF8E0", amberBorder:"#E8D580",
+  red:"#8A1A1A", redBg:"#FDF0F0", redBorder:"#E8B8B8",
+  tagTransformer:"#EAF0FA", tagTransformerText:"#1A3A6A",
+  tagHardware:"#EAF5EA", tagHardwareText:"#1A4A1A",
+  tagSwitchgear:"#F0EAF5", tagSwitchgearText:"#3A1A5A",
+  tagPPE:"#FFF8E0", tagPPEText:"#7A5A00",
+};
+
+// ── ROUTING FUNCTION ──────────────────────────────────────────────────────────
+async function routeRFQ(category, fields, coo, certs, leadtime, qty, notes, vendors, imageData) {
+  const vendorSummary = vendors.map(v => ({
+    id:v.id, name:v.name, category:v.category, categories:v.categories,
+    coo:v.coo, productTypes:v.productTypes,
+    kvaMin:v.kvaMin, kvaMax:v.kvaMax,
+    dryType:v.dryType, liquidFilled:v.liquidFilled,
+    certifications:v.certifications,
+    leadTime:v.leadTime, notes:v.notes,
+  }));
+
+  const system = `You are a vendor routing assistant for Zeus Power Supplies, a specialty distributor of electrical equipment.
+
+Zeus's vendor database:
+${JSON.stringify(vendorSummary, null, 2)}
+
+ROUTING RULES:
+1. COO is the PRIMARY filter. If customer excludes China, eliminate ALL China COO vendors immediately. If FEOC, exclude China + Russia. If domestic_only, USA only.
+2. Match on equipment category, product type/subtype, kVA range, voltage class, certifications required.
+3. Rank: RECOMMENDED (best fit, engage first - typically 2-4 vendors), SECONDARY (viable alternative), EXCLUDED (clear reason).
+4. Flag if lead time is tight vs. vendor typical lead times.
+5. For RECOMMENDED vendors, draft a concise OEM outreach email using Zeus's standard format. Include extracted specs, quantity, and deadline (1-2 days before customer deadline if provided).
+6. Keep reasoning concise and practical.
+7. If an image is provided alongside text, extract all relevant specs from the image and use them in routing.
+
+Respond ONLY with valid JSON matching this exact structure:
+{
+  "summary": "2-3 sentence routing summary",
+  "recommended": [{"id": "vendor_id", "reason": "concise reason", "emailDraft": "full email text"}],
+  "secondary": [{"id": "vendor_id", "reason": "concise reason"}],
+  "excluded": [{"id": "vendor_id", "reason": "concise reason"}],
+  "flags": ["array of caveats or missing info"]
+}`;
+
+  const rfqDesc = [
+    category ? `Equipment category: ${category}` : null,
+    ...Object.entries(fields).filter(([,v]) => v).map(([k,v]) => `${k}: ${v}`),
+    coo ? `COO requirement: ${coo}` : null,
+    certs.length ? `Certifications required: ${certs.join(", ")}` : null,
+    leadtime ? `Lead time needed: ${leadtime}` : null,
+    qty ? `Quantity: ${qty}` : null,
+    notes ? `Additional context / RFQ description: ${notes}` : null,
+  ].filter(Boolean).join("\n");
+
+  // Build message content — support image if provided
+  let userContent;
+  if (imageData) {
+    userContent = [
+      { type:"image", source:{ type:"base64", media_type:imageData.type, data:imageData.data } },
+      { type:"text", text: rfqDesc || "Please route this RFQ based on the image provided." },
+    ];
+  } else {
+    userContent = rfqDesc;
+  }
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({
+      model:"claude-sonnet-4-20250514",
+      max_tokens:2500,
+      system,
+      messages:[{ role:"user", content:userContent }],
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`API ${res.status}: ${err.slice(0,200)}`);
+  }
+
+  const data = await res.json();
+  const text = data.content?.find(b => b.type==="text")?.text || "";
+  const clean = text.replace(/```json|```/g,"").trim();
+  return JSON.parse(clean);
+}
+
+// ── MAIN APP ──────────────────────────────────────────────────────────────────
+function ZeusVendorRouter() {
+  const [tab, setTab] = useState("route");
+  const [category, setCategory] = useState("");
+  const [fields, setFields] = useState({});
+  const [coo, setCoo] = useState("");
+  const [certs, setCerts] = useState([]);
+  const [leadtime, setLeadtime] = useState("");
+  const [qty, setQty] = useState("");
+  const [notes, setNotes] = useState("");
+  const [openDesc, setOpenDesc] = useState("");
+  const [uploadedImage, setUploadedImage] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState(null);
+  const [error, setError] = useState(null);
+  const [expandedVendor, setExpandedVendor] = useState(null);
+  const [expandedEmail, setExpandedEmail] = useState(null);
+  const [browseFilter, setBrowseFilter] = useState("ALL");
+  const [browseSearch, setBrowseSearch] = useState("");
+
+  // OneDrive data state
+  const [vendors, setVendors] = useState(FALLBACK_VENDORS);
+  const [dataSource, setDataSource] = useState("fallback"); // "live" | "fallback" | "loading"
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const loadVendorData = useCallback(async () => {
+    setRefreshing(true);
+    setDataSource("loading");
+    try {
+      const { vendors: liveVendors, lastUpdated: lu } = await fetchVendorsFromOneDrive();
+      if (liveVendors && liveVendors.length > 0) {
+        setVendors(liveVendors);
+        setLastUpdated(lu);
+        setDataSource("live");
+      } else {
+        throw new Error("No vendors parsed from file");
+      }
+    } catch (e) {
+      console.warn("OneDrive fetch failed, using fallback:", e.message);
+      setVendors(FALLBACK_VENDORS);
+      setDataSource("fallback");
+    }
+    setRefreshing(false);
+  }, []);
+
+  useEffect(() => { loadVendorData(); }, [loadVendorData]);
+
+  const fieldSchema = FIELD_SCHEMAS[category] || [];
+  const getVendor = id => vendors.find(v => v.id === id);
+
+  const handleCategoryChange = val => {
+    setCategory(val);
+    setFields({});
+    setResults(null);
+    setError(null);
+  };
+
+  const handleRoute = async (fromOpenDesc = false) => {
+    setLoading(true);
+    setResults(null);
+    setError(null);
+    try {
+      const res = await routeRFQ(
+        fromOpenDesc ? "" : category,
+        fromOpenDesc ? {} : fields,
+        coo, certs, leadtime, qty,
+        fromOpenDesc ? openDesc : notes,
+        vendors,
+        uploadedImage
+      );
+      setResults(res);
+    } catch (e) {
+      setError(e.message || "Routing failed.");
+    }
+    setLoading(false);
+  };
+
+  const handleImageUpload = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const b64 = ev.target.result.split(",")[1];
+      const type = file.type;
+      setUploadedImage({ data: b64, type, name: file.name });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const toggleCert = c => setCerts(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c]);
+
+  const inp = (extra = {}) => ({
+    width:"100%", boxSizing:"border-box",
+    background:T.surface, border:`1px solid ${T.border}`,
+    color:T.text, padding:"8px 10px", borderRadius:5,
+    fontSize:13, fontFamily:"inherit", outline:"none", ...extra,
+  });
+
+  const VendorCard = ({ id, tier }) => {
+    const v = getVendor(id);
+    if (!v) return null;
+    const cfg = {
+      RECOMMENDED:{ border:T.greenBorder, bg:T.greenBg, dot:T.green, label:"RECOMMENDED" },
+      SECONDARY:  { border:T.amberBorder, bg:T.amberBg, dot:T.amber, label:"SECONDARY" },
+      EXCLUDED:   { border:T.redBorder,   bg:T.redBg,   dot:T.red,   label:"EXCLUDED" },
+    }[tier];
+    const isExp = expandedVendor === id;
+    return (
+      <div style={{ border:`1px solid ${cfg.border}`, borderRadius:6, marginBottom:6, overflow:"hidden", background:T.surface }}>
+        <div onClick={() => setExpandedVendor(isExp ? null : id)}
+          style={{ padding:"10px 14px", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", background:cfg.bg }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ width:8, height:8, borderRadius:"50%", background:cfg.dot, display:"inline-block", flexShrink:0 }} />
+            <span style={{ fontWeight:700, fontSize:14, color:T.text }}>{v.name}</span>
+            <span style={{ fontSize:10, color:cfg.dot, fontWeight:700, letterSpacing:"0.06em" }}>{cfg.label}</span>
+          </div>
+          <div style={{ display:"flex", gap:5, alignItems:"center" }}>
+            {v.coo?.map(c => (
+              <span key={c} style={{ fontSize:10, padding:"2px 7px", borderRadius:3,
+                background:c==="China"?T.redBg:T.greenBg,
+                color:c==="China"?T.red:T.green,
+                border:`1px solid ${c==="China"?T.redBorder:T.greenBorder}` }}>{c}</span>
+            ))}
+            <span style={{ color:T.textLight, fontSize:12 }}>{isExp?"▲":"▼"}</span>
+          </div>
+        </div>
+        {isExp && (
+          <div style={{ padding:"12px 14px", borderTop:`1px solid ${cfg.border}`, background:T.surface }}>
+            {v.contact && <div style={{ fontSize:12, color:T.textMid, marginBottom:4 }}><span style={{ color:T.textLight }}>Contact: </span>{v.contact}</div>}
+            {v.leadTime && <div style={{ fontSize:12, color:T.textMid, marginBottom:4 }}><span style={{ color:T.textLight }}>Lead times: </span>{typeof v.leadTime==="object"?Object.entries(v.leadTime).map(([k,val])=>`${k}: ${val}`).join(" · "):v.leadTime}</div>}
+            {v.certifications?.length > 0 && <div style={{ fontSize:12, color:T.textMid, marginBottom:4 }}><span style={{ color:T.textLight }}>Certs: </span>{v.certifications.join(", ")}</div>}
+            <div style={{ fontSize:12, color:T.textMid, marginTop:6, lineHeight:1.6 }}>{v.notes}</div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const ResultsPanel = () => (
+    <div>
+      <div style={{ background:T.surface, border:`1px solid ${T.border}`, borderRadius:6, padding:16, marginBottom:16 }}>
+        <div style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", marginBottom:6 }}>ROUTING SUMMARY</div>
+        <div style={{ fontSize:14, color:T.text, lineHeight:1.7 }}>{results.summary}</div>
+        {results.flags?.length > 0 && (
+          <div style={{ marginTop:10, display:"flex", flexWrap:"wrap", gap:6 }}>
+            {results.flags.map((f,i) => (
+              <span key={i} style={{ background:T.amberBg, border:`1px solid ${T.amberBorder}`, color:T.amber, fontSize:11, padding:"3px 10px", borderRadius:4 }}>⚠ {f}</span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {results.recommended?.length > 0 && (
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.green, letterSpacing:"0.08em", marginBottom:10 }}>✓ RECOMMENDED — ENGAGE FIRST</div>
+          {results.recommended.map(r => {
+            const v = getVendor(r.id);
+            if (!v) return null;
+            return (
+              <div key={r.id} style={{ marginBottom:12 }}>
+                <VendorCard id={r.id} tier="RECOMMENDED" />
+                <div style={{ fontSize:12, color:T.green, paddingLeft:4, marginBottom:r.emailDraft?6:0 }}>{r.reason}</div>
+                {r.emailDraft && (
+                  <div style={{ marginLeft:4 }}>
+                    <button onClick={() => setExpandedEmail(expandedEmail===r.id?null:r.id)}
+                      style={{ background:T.greenBg, border:`1px solid ${T.greenBorder}`, color:T.green, padding:"5px 12px", borderRadius:4, cursor:"pointer", fontSize:11, fontWeight:600, marginBottom:6 }}>
+                      {expandedEmail===r.id?"▲ Hide email draft":"✉ View email draft"}
+                    </button>
+                    {expandedEmail===r.id && (
+                      <div style={{ background:T.surface2, border:`1px solid ${T.border}`, borderRadius:4, padding:14, fontSize:12, color:T.textMid, lineHeight:1.8, whiteSpace:"pre-wrap", fontFamily:"monospace" }}>
+                        {r.emailDraft}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {results.secondary?.length > 0 && (
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.amber, letterSpacing:"0.08em", marginBottom:10 }}>◎ SECONDARY — ENGAGE IF NEEDED</div>
+          {results.secondary.map(r => {
+            const v = getVendor(r.id);
+            if (!v) return null;
+            return (
+              <div key={r.id} style={{ marginBottom:8 }}>
+                <VendorCard id={r.id} tier="SECONDARY" />
+                <div style={{ fontSize:12, color:T.amber, paddingLeft:4 }}>{r.reason}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {results.excluded?.length > 0 && (
+        <div>
+          <div style={{ fontSize:11, fontWeight:700, color:T.red, letterSpacing:"0.08em", marginBottom:10 }}>✗ EXCLUDED</div>
+          {results.excluded.map(r => {
+            const v = getVendor(r.id);
+            if (!v) return null;
+            return (
+              <div key={r.id} style={{ marginBottom:8 }}>
+                <VendorCard id={r.id} tier="EXCLUDED" />
+                <div style={{ fontSize:12, color:T.red, paddingLeft:4 }}>{r.reason}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  const filteredVendors = vendors.filter(v => {
+    if (browseFilter !== "ALL" && v.category !== browseFilter) return false;
+    if (browseSearch && !v.name.toLowerCase().includes(browseSearch.toLowerCase()) &&
+        !v.notes?.toLowerCase().includes(browseSearch.toLowerCase())) return false;
+    return true;
+  });
+
+  return (
+    <div style={{ background:T.bg, minHeight:"100vh", fontFamily:"'DM Sans','Segoe UI',sans-serif", color:T.text }}>
+
+      {/* HEADER */}
+      <div style={{ background:T.surface, borderBottom:`1px solid ${T.border}`, padding:"12px 24px" }}>
+        <div style={{ maxWidth:900, margin:"0 auto", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ background:T.orange, borderRadius:5, padding:"6px 9px" }}>
+              <span style={{ color:"#fff", fontSize:15, fontWeight:900 }}>⚡</span>
+            </div>
+            <div>
+              <div style={{ fontWeight:700, fontSize:15, color:T.text, letterSpacing:"-0.01em" }}>Zeus Vendor Router</div>
+              <div style={{ fontSize:11, color:T.textLight }}>RFQ Intelligence · v3.0</div>
+            </div>
+          </div>
+
+          {/* Data status + refresh */}
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <span style={{ width:7, height:7, borderRadius:"50%", background:
+                dataSource==="live"?T.green:dataSource==="loading"?T.amber:T.red,
+                display:"inline-block",
+                animation:dataSource==="loading"?"pulse 1s infinite":undefined }} />
+              <span style={{ fontSize:11, color:T.textLight }}>
+                {dataSource==="live" ? `Live data${lastUpdated?` · Updated ${lastUpdated}`:""}` :
+                 dataSource==="loading" ? "Loading..." : "Fallback data"}
+              </span>
+            </div>
+            <button onClick={loadVendorData} disabled={refreshing}
+              style={{ background:T.surface2, border:`1px solid ${T.border}`, color:T.textMid,
+                padding:"4px 10px", borderRadius:4, cursor:refreshing?"not-allowed":"pointer",
+                fontSize:11, opacity:refreshing?0.6:1 }}>
+              {refreshing ? "↻ Refreshing..." : "↻ Refresh"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* CENTERED TAB NAV */}
+      <div style={{ background:T.surface, borderBottom:`1px solid ${T.border}`, padding:"0 24px" }}>
+        <div style={{ maxWidth:900, margin:"0 auto", display:"flex", justifyContent:"center", gap:2 }}>
+          {[
+            ["route",  "Route by Specs"],
+            ["open",   "Route by Description"],
+            ["browse", "Browse Vendors"],
+          ].map(([val, lbl]) => (
+            <button key={val} onClick={() => { setTab(val); setResults(null); setError(null); }}
+              style={{ padding:"10px 20px", border:"none", borderBottom:`3px solid ${tab===val?T.orange:"transparent"}`,
+                background:"transparent", color:tab===val?T.orange:T.textMid,
+                cursor:"pointer", fontSize:13, fontWeight:tab===val?700:400,
+                transition:"all 0.15s" }}>
+              {lbl}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ maxWidth:900, margin:"0 auto", padding:"24px 20px" }}>
+
+        {/* ── TAB: ROUTE BY SPECS ── */}
+        {tab==="route" && (
+          <>
+            <div style={{ background:T.surface, border:`1px solid ${T.border}`, borderRadius:8, padding:20, marginBottom:16 }}>
+              <div style={{ marginBottom:16 }}>
+                <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:5 }}>EQUIPMENT CATEGORY *</label>
+                <select value={category} onChange={e => handleCategoryChange(e.target.value)} style={inp()}>
+                  {CATEGORY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+
+              {fieldSchema.length > 0 && (
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
+                  {fieldSchema.map(f => (
+                    <div key={f.key}>
+                      <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:5 }}>{f.label.toUpperCase()}</label>
+                      {f.type==="select" ? (
+                        <select value={fields[f.key]||""} onChange={e => setFields(prev=>({...prev,[f.key]:e.target.value}))} style={inp()}>
+                          {f.options.map(o => <option key={o} value={o}>{o||"-"}</option>)}
+                        </select>
+                      ) : (
+                        <input value={fields[f.key]||""} onChange={e => setFields(prev=>({...prev,[f.key]:e.target.value}))} placeholder={f.placeholder} style={inp()} />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {category && (
+                <>
+                  <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:14, marginBottom:14 }}>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:12 }}>
+                      <div>
+                        <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:5 }}>COO REQUIREMENT</label>
+                        <select value={coo} onChange={e => setCoo(e.target.value)} style={inp()}>
+                          {COO_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        </select>
+                      </div>
+                      {!["HARDWARE","PPE"].includes(category) && (
+                        <div>
+                          <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:5 }}>LEAD TIME NEEDED</label>
+                          <input value={leadtime} onChange={e => setLeadtime(e.target.value)} placeholder="e.g. 16 weeks" style={inp()} />
+                        </div>
+                      )}
+                      <div>
+                        <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:5 }}>QUANTITY</label>
+                        <input value={qty} onChange={e => setQty(e.target.value)} placeholder="e.g. 10 units" style={inp()} />
+                      </div>
+                    </div>
+                    <div style={{ marginBottom:12 }}>
+                      <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:6 }}>CERTIFICATIONS REQUIRED</label>
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                        {CERT_OPTIONS.map(c => (
+                          <button key={c} onClick={() => toggleCert(c)}
+                            style={{ padding:"4px 10px", borderRadius:4,
+                              border:`1px solid ${certs.includes(c)?T.orange:T.border}`,
+                              background:certs.includes(c)?T.orangeLight:T.surface2,
+                              color:certs.includes(c)?T.orange:T.textMid,
+                              fontSize:11, cursor:"pointer", fontWeight:certs.includes(c)?600:400 }}>
+                            {c}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:5 }}>CUSTOMER NOTES / ADDITIONAL CONTEXT</label>
+                      <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3}
+                        placeholder="Customer name, special requirements, paste email body, deadline..."
+                        style={{ ...inp(), resize:"vertical", lineHeight:1.5 }} />
+                    </div>
+                  </div>
+                  <div style={{ display:"flex", justifyContent:"flex-end" }}>
+                    <button onClick={() => handleRoute(false)} disabled={loading}
+                      style={{ background:T.orange, border:"none", color:"#fff", padding:"10px 28px",
+                        borderRadius:5, cursor:loading?"not-allowed":"pointer", fontSize:13, fontWeight:700, opacity:loading?0.7:1 }}>
+                      {loading?"Routing...":"Route RFQ →"}
+                    </button>
+                  </div>
+                </>
+              )}
+              {!category && (
+                <div style={{ textAlign:"center", padding:"20px 0", color:T.textLight, fontSize:13 }}>Select an equipment category to begin</div>
+              )}
+            </div>
+
+            {loading && <div style={{ textAlign:"center", padding:"40px 0", color:T.textLight }}>
+              <div style={{ fontSize:28, marginBottom:10, display:"inline-block", animation:"spin 1s linear infinite" }}>⚡</div>
+              <div style={{ fontSize:13 }}>Matching vendors · Drafting outreach...</div>
+            </div>}
+            {error && <div style={{ background:T.redBg, border:`1px solid ${T.redBorder}`, borderRadius:6, padding:14, color:T.red, fontSize:13 }}><strong>Error:</strong> {error}</div>}
+            {results && !loading && <ResultsPanel />}
+          </>
+        )}
+
+        {/* ── TAB: ROUTE BY DESCRIPTION ── */}
+        {tab==="open" && (
+          <>
+            <div style={{ background:T.surface, border:`1px solid ${T.border}`, borderRadius:8, padding:20, marginBottom:16 }}>
+              <div style={{ marginBottom:4 }}>
+                <div style={{ fontSize:14, fontWeight:600, color:T.text, marginBottom:4 }}>Open Description Routing</div>
+                <div style={{ fontSize:12, color:T.textLight, marginBottom:16 }}>Paste an email, type a description, upload a screenshot — Claude will extract the specs and route automatically.</div>
+              </div>
+
+              {/* COO + Lead time row */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:12 }}>
+                <div>
+                  <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:5 }}>COO REQUIREMENT</label>
+                  <select value={coo} onChange={e => setCoo(e.target.value)} style={inp()}>
+                    {COO_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:5 }}>LEAD TIME NEEDED</label>
+                  <input value={leadtime} onChange={e => setLeadtime(e.target.value)} placeholder="e.g. 16 weeks" style={inp()} />
+                </div>
+                <div>
+                  <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:5 }}>QUANTITY</label>
+                  <input value={qty} onChange={e => setQty(e.target.value)} placeholder="e.g. 10 units" style={inp()} />
+                </div>
+              </div>
+
+              {/* Certs */}
+              <div style={{ marginBottom:12 }}>
+                <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:6 }}>CERTIFICATIONS REQUIRED</label>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                  {CERT_OPTIONS.map(c => (
+                    <button key={c} onClick={() => toggleCert(c)}
+                      style={{ padding:"4px 10px", borderRadius:4,
+                        border:`1px solid ${certs.includes(c)?T.orange:T.border}`,
+                        background:certs.includes(c)?T.orangeLight:T.surface2,
+                        color:certs.includes(c)?T.orange:T.textMid,
+                        fontSize:11, cursor:"pointer", fontWeight:certs.includes(c)?600:400 }}>
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Text description */}
+              <div style={{ marginBottom:12 }}>
+                <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:5 }}>RFQ DESCRIPTION — paste email, type specs, or describe the request</label>
+                <textarea value={openDesc} onChange={e => setOpenDesc(e.target.value)} rows={8}
+                  placeholder={"Paste a customer email, BOM description, or type free-form specs here...\n\nExample:\n'Customer needs 5x 3-phase padmount transformers, 13.8kV primary, 480Y/277V secondary, 1000 kVA each. DOE 2016 required. No China. Need delivery in 20 weeks.'"}
+                  style={{ ...inp(), resize:"vertical", lineHeight:1.6 }} />
+              </div>
+
+              {/* Image upload */}
+              <div style={{ marginBottom:16 }}>
+                <label style={{ fontSize:11, fontWeight:600, color:T.textLight, letterSpacing:"0.06em", display:"block", marginBottom:8 }}>SCREENSHOT / IMAGE (optional — attach a spec sheet, BOM screenshot, or email image)</label>
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <button onClick={() => fileInputRef.current?.click()}
+                    style={{ background:T.surface2, border:`1px solid ${T.border}`, color:T.textMid,
+                      padding:"8px 16px", borderRadius:5, cursor:"pointer", fontSize:12, fontWeight:500 }}>
+                    📎 {uploadedImage ? "Change image" : "Attach image"}
+                  </button>
+                  {uploadedImage && (
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontSize:12, color:T.green }}>✓ {uploadedImage.name}</span>
+                      <button onClick={() => setUploadedImage(null)}
+                        style={{ background:"none", border:"none", color:T.red, cursor:"pointer", fontSize:12 }}>✕ Remove</button>
+                    </div>
+                  )}
+                </div>
+                <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} style={{ display:"none" }} />
+                {uploadedImage && (
+                  <div style={{ marginTop:10, maxWidth:300 }}>
+                    <img src={`data:${uploadedImage.type};base64,${uploadedImage.data}`}
+                      alt="Uploaded" style={{ width:"100%", borderRadius:4, border:`1px solid ${T.border}` }} />
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display:"flex", justifyContent:"flex-end" }}>
+                <button onClick={() => handleRoute(true)} disabled={loading || (!openDesc.trim() && !uploadedImage)}
+                  style={{ background:T.orange, border:"none", color:"#fff", padding:"10px 28px",
+                    borderRadius:5, cursor:(loading||(!openDesc.trim()&&!uploadedImage))?"not-allowed":"pointer",
+                    fontSize:13, fontWeight:700, opacity:(loading||(!openDesc.trim()&&!uploadedImage))?0.5:1 }}>
+                  {loading?"Routing...":"Route RFQ →"}
+                </button>
+              </div>
+            </div>
+
+            {loading && <div style={{ textAlign:"center", padding:"40px 0", color:T.textLight }}>
+              <div style={{ fontSize:28, marginBottom:10, display:"inline-block", animation:"spin 1s linear infinite" }}>⚡</div>
+              <div style={{ fontSize:13 }}>Extracting specs · Matching vendors · Drafting outreach...</div>
+            </div>}
+            {error && <div style={{ background:T.redBg, border:`1px solid ${T.redBorder}`, borderRadius:6, padding:14, color:T.red, fontSize:13 }}><strong>Error:</strong> {error}</div>}
+            {results && !loading && <ResultsPanel />}
+          </>
+        )}
+
+        {/* ── TAB: BROWSE VENDORS ── */}
+        {tab==="browse" && (
+          <div>
+            <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap", alignItems:"center" }}>
+              <input value={browseSearch} onChange={e => setBrowseSearch(e.target.value)}
+                placeholder="Search vendors..." style={{ ...inp(), width:200, marginRight:6 }} />
+              {["ALL","TRANSFORMER","SWITCHGEAR","HARDWARE","PPE"].map(cat => (
+                <button key={cat} onClick={() => setBrowseFilter(cat)}
+                  style={{ padding:"6px 14px", borderRadius:5,
+                    border:`1px solid ${browseFilter===cat?T.orange:T.border}`,
+                    background:browseFilter===cat?T.orangeLight:T.surface,
+                    color:browseFilter===cat?T.orange:T.textMid,
+                    cursor:"pointer", fontSize:12, fontWeight:browseFilter===cat?600:400 }}>
+                  {cat}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize:12, color:T.textLight, marginBottom:12 }}>
+              {filteredVendors.length} vendors — click to expand
+            </div>
+            {filteredVendors.map(v => {
+              const isExp = expandedVendor === v.id;
+              const catColor = v.category==="TRANSFORMER" ? { bg:T.tagTransformer, text:T.tagTransformerText }
+                : v.category==="HARDWARE" ? { bg:T.tagHardware, text:T.tagHardwareText }
+                : v.category==="PPE" ? { bg:T.tagPPE, text:T.tagPPEText }
+                : { bg:T.tagSwitchgear, text:T.tagSwitchgearText };
+              return (
+                <div key={v.id} onClick={() => setExpandedVendor(isExp?null:v.id)}
+                  style={{ background:T.surface, border:`1px solid ${T.border}`, borderRadius:6, marginBottom:6, cursor:"pointer", overflow:"hidden" }}>
+                  <div style={{ padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                      <span style={{ fontWeight:700, fontSize:14, color:T.text }}>{v.name}</span>
+                      <span style={{ fontSize:10, padding:"2px 7px", borderRadius:3, background:catColor.bg, color:catColor.text, fontWeight:600 }}>{v.category}</span>
+                    </div>
+                    <div style={{ display:"flex", gap:5 }}>
+                      {v.coo?.map(c => (
+                        <span key={c} style={{ fontSize:10, padding:"2px 6px", borderRadius:3,
+                          background:c==="China"?T.redBg:T.greenBg,
+                          color:c==="China"?T.red:T.green,
+                          border:`1px solid ${c==="China"?T.redBorder:T.greenBorder}` }}>{c}</span>
+                      ))}
+                      <span style={{ color:T.textLight, fontSize:12 }}>{isExp?"▲":"▼"}</span>
+                    </div>
+                  </div>
+                  {isExp && (
+                    <div style={{ padding:"10px 14px", borderTop:`1px solid ${T.border}`, background:T.surface2 }}>
+                      {v.contact && <div style={{ fontSize:12, color:T.textMid, marginBottom:3 }}><span style={{ color:T.textLight }}>Contact: </span>{v.contact}</div>}
+                      {v.kvaMin && <div style={{ fontSize:12, color:T.textMid, marginBottom:3 }}><span style={{ color:T.textLight }}>kVA range: </span>{v.kvaMin}–{v.kvaMax} kVA</div>}
+                      {v.certifications?.length > 0 && <div style={{ fontSize:12, color:T.textMid, marginBottom:3 }}><span style={{ color:T.textLight }}>Certs: </span>{v.certifications.join(", ")}</div>}
+                      <div style={{ fontSize:12, color:T.textMid, marginTop:6, lineHeight:1.6 }}>{v.notes}</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<ZeusVendorRouter />);
+</script>
+</body>
+</html>
